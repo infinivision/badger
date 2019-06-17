@@ -1,4 +1,4 @@
-# BadgerDB [![GoDoc](https://godoc.org/github.com/dgraph-io/badger?status.svg)](https://godoc.org/github.com/dgraph-io/badger) [![Go Report Card](https://goreportcard.com/badge/github.com/dgraph-io/badger)](https://goreportcard.com/report/github.com/dgraph-io/badger) [![Sourcegraph](https://sourcegraph.com/github.com/dgraph-io/badger/-/badge.svg)](https://sourcegraph.com/github.com/dgraph-io/badger?badge) [![Build Status](https://teamcity.dgraph.io/guestAuth/app/rest/builds/buildType:(id:Badger_UnitTests)/statusIcon.svg)](https://teamcity.dgraph.io/viewLog.html?buildTypeId=Badger_UnitTests&buildId=lastFinished&guest=1) ![Appveyor](https://ci.appveyor.com/api/projects/status/github/dgraph-io/badger?branch=master&svg=true) [![Coverage Status](https://coveralls.io/repos/github/dgraph-io/badger/badge.svg?branch=master)](https://coveralls.io/github/dgraph-io/badger?branch=master)
+# BadgerDB [![GoDoc](https://godoc.org/github.com/infinivision/badger?status.svg)](https://godoc.org/github.com/infinivision/badger) [![Go Report Card](https://goreportcard.com/badge/github.com/infinivision/badger)](https://goreportcard.com/report/github.com/infinivision/badger) [![Sourcegraph](https://sourcegraph.com/github.com/infinivision/badger/-/badge.svg)](https://sourcegraph.com/github.com/infinivision/badger?badge) [![Build Status](https://teamcity.dgraph.io/guestAuth/app/rest/builds/buildType:(id:Badger_UnitTests)/statusIcon.svg)](https://teamcity.dgraph.io/viewLog.html?buildTypeId=Badger_UnitTests&buildId=lastFinished&guest=1) ![Appveyor](https://ci.appveyor.com/api/projects/status/github/dgraph-io/badger?branch=master&svg=true) [![Coverage Status](https://coveralls.io/repos/github/dgraph-io/badger/badge.svg?branch=master)](https://coveralls.io/github/dgraph-io/badger?branch=master)
 
 ![Badger mascot](images/diggy-shadow.png)
 
@@ -18,7 +18,7 @@ persistence and consistency.
 Badger v1.0 was released in Nov 2017, with a Badger v2.0 release coming up in a
 few months. The [Changelog] is kept fairly up-to-date.
 
-[Changelog]:https://github.com/dgraph-io/badger/blob/master/CHANGELOG.md
+[Changelog]:https://github.com/infinivision/badger/blob/master/CHANGELOG.md
 
 ## Table of Contents
  * [Getting Started](#getting-started)
@@ -55,7 +55,7 @@ few months. The [Changelog] is kept fairly up-to-date.
 To start using Badger, install Go 1.8 or above and run `go get`:
 
 ```sh
-$ go get github.com/dgraph-io/badger/...
+$ go get github.com/infinivision/badger/...
 ```
 
 This will retrieve the library and install the `badger` command line
@@ -76,7 +76,7 @@ package main
 import (
 	"log"
 
-	"github.com/dgraph-io/badger"
+	"github.com/infinivision/badger"
 )
 
 func main() {
@@ -589,7 +589,7 @@ These metrics can then be collected by a system like [Prometheus], to get
 better visibility into what Badger is doing.
 
 [expvar]: https://golang.org/pkg/expvar/
-[metrics]: https://github.com/dgraph-io/badger/blob/master/y/metrics.go
+[metrics]: https://github.com/infinivision/badger/blob/master/y/metrics.go
 [Prometheus]: https://prometheus.io/
 
 ## Resources
@@ -646,7 +646,7 @@ benchmarking code, and the detailed logs for the benchmarks can be found in the
 [badger-bench] repo. More explanation, including graphs can be found the blog posts (linked
 above).
 
-[badger-bench]: https://github.com/dgraph-io/badger-bench
+[badger-bench]: https://github.com/infinivision/badger-bench
 
 ## Other Projects Using Badger
 Below is a list of known projects that use Badger:
@@ -692,8 +692,8 @@ acquire read locks over the value log files to avoid value log GC removing the
 file from underneath. As a side effect, this also blocks a new value log GC
 file from being created, when the value log file boundary is hit.
 
-Please see Github issues [#293](https://github.com/dgraph-io/badger/issues/293)
-and [#315](https://github.com/dgraph-io/badger/issues/315).
+Please see Github issues [#293](https://github.com/infinivision/badger/issues/293)
+and [#315](https://github.com/infinivision/badger/issues/315).
 
 There are multiple workarounds during iteration:
 
@@ -739,7 +739,7 @@ the database, you'll see these writes on disk.
 
 - **Reverse iteration doesn't give me the right results.**
 
-Just like forward iteration goes to the first key which is equal or greater than the SEEK key, reverse iteration goes to the first key which is equal or lesser than the SEEK key. Therefore, SEEK key would not be part of the results. You can typically add a `0xff` byte as a suffix to the SEEK key to include it in the results. See the following issues: [#436](https://github.com/dgraph-io/badger/issues/436) and [#347](https://github.com/dgraph-io/badger/issues/347).
+Just like forward iteration goes to the first key which is equal or greater than the SEEK key, reverse iteration goes to the first key which is equal or lesser than the SEEK key. Therefore, SEEK key would not be part of the results. You can typically add a `0xff` byte as a suffix to the SEEK key to include it in the results. See the following issues: [#436](https://github.com/infinivision/badger/issues/436) and [#347](https://github.com/infinivision/badger/issues/347).
 
 - **Which instances should I use for Badger?**
 
@@ -769,7 +769,7 @@ We recommend setting max file descriptors to a high number depending upon the ex
 
 ## Contact
 - Please use [discuss.dgraph.io](https://discuss.dgraph.io) for questions, feature requests and discussions.
-- Please use [Github issue tracker](https://github.com/dgraph-io/badger/issues) for filing bugs or feature requests.
+- Please use [Github issue tracker](https://github.com/infinivision/badger/issues) for filing bugs or feature requests.
 - Join [![Slack Status](http://slack.dgraph.io/badge.svg)](http://slack.dgraph.io).
 - Follow us on Twitter [@dgraphlabs](https://twitter.com/dgraphlabs).
 

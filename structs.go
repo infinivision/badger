@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 
-	"github.com/dgraph-io/badger/y"
+	"github.com/infinivision/badger/y"
 )
 
 type valuePointer struct {

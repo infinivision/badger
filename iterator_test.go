@@ -26,8 +26,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dgraph-io/badger/options"
-	"github.com/dgraph-io/badger/y"
+	"github.com/infinivision/badger/options"
+	"github.com/infinivision/badger/y"
 	"github.com/stretchr/testify/require"
 )
 
@@ -147,7 +147,7 @@ func TestIteratePrefix(t *testing.T) {
 // Benchmark with opt.Prefix set ===
 // goos: linux
 // goarch: amd64
-// pkg: github.com/dgraph-io/badger
+// pkg: github.com/infinivision/badger
 // BenchmarkIteratePrefixSingleKey/Key_lookups-4         	   10000	    365539 ns/op
 // --- BENCH: BenchmarkIteratePrefixSingleKey/Key_lookups-4
 // 	iterator_test.go:147: Inner b.N: 1
@@ -157,12 +157,12 @@ func TestIteratePrefix(t *testing.T) {
 // 	iterator_test.go:143: LSM files: 79
 // 	iterator_test.go:145: Outer b.N: 1
 // PASS
-// ok  	github.com/dgraph-io/badger	41.586s
+// ok  	github.com/infinivision/badger	41.586s
 //
 // Benchmark with NO opt.Prefix set ===
 // goos: linux
 // goarch: amd64
-// pkg: github.com/dgraph-io/badger
+// pkg: github.com/infinivision/badger
 // BenchmarkIteratePrefixSingleKey/Key_lookups-4         	   10000	    460924 ns/op
 // --- BENCH: BenchmarkIteratePrefixSingleKey/Key_lookups-4
 // 	iterator_test.go:147: Inner b.N: 1
@@ -172,7 +172,7 @@ func TestIteratePrefix(t *testing.T) {
 // 	iterator_test.go:143: LSM files: 83
 // 	iterator_test.go:145: Outer b.N: 1
 // PASS
-// ok  	github.com/dgraph-io/badger	41.836s
+// ok  	github.com/infinivision/badger	41.836s
 //
 // Only my laptop there's a 20% improvement in latency with ~80 files.
 func BenchmarkIteratePrefixSingleKey(b *testing.B) {

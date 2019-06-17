@@ -25,10 +25,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgraph-io/badger"
-	"github.com/dgraph-io/badger/options"
-	"github.com/dgraph-io/badger/table"
-	"github.com/dgraph-io/badger/y"
+	"github.com/infinivision/badger"
+	"github.com/infinivision/badger/options"
+	"github.com/infinivision/badger/table"
+	"github.com/infinivision/badger/y"
 	humanize "github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 )

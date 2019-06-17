@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dgraph-io/badger/pb"
-	"github.com/dgraph-io/badger/y"
+	"github.com/infinivision/badger/pb"
+	"github.com/infinivision/badger/y"
 	humanize "github.com/dustin/go-humanize"
 )
 

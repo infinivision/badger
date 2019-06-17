@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/dgraph-io/badger/y"
+	"github.com/infinivision/badger/y"
 )
 
 const (
@@ -68,6 +68,7 @@ func (s *Arena) putNode(height int) uint32 {
 	// Pad the allocation with enough bytes to ensure pointer alignment.
 	l := uint32(MaxNodeSize - unusedSize + nodeAlign)
 	n := atomic.AddUint32(&s.n, l)
+
 	y.AssertTruef(int(n) <= len(s.buf),
 		"Arena too small, toWrite:%d newTotal:%d limit:%d",
 		l, n, len(s.buf))

@@ -23,8 +23,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/dgraph-io/badger/options"
-	"github.com/dgraph-io/badger/y"
+	"github.com/infinivision/badger/options"
+	"github.com/infinivision/badger/y"
 	"github.com/stretchr/testify/require"
 )
 

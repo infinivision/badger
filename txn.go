@@ -27,8 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dgraph-io/badger/y"
 	farm "github.com/dgryski/go-farm"
+	"github.com/infinivision/badger/y"
 	"github.com/pkg/errors"
 )
 
@@ -291,9 +291,11 @@ func (txn *Txn) checkSize(e *Entry) error {
 	count := txn.count + 1
 	// Extra bytes for version in key.
 	size := txn.size + int64(e.estimateSize(txn.db.opt.ValueThreshold)) + 10
-	if count >= txn.db.opt.maxBatchCount || size >= txn.db.opt.maxBatchSize {
-		return ErrTxnTooBig
-	}
+	/*
+		if count >= txn.db.opt.maxBatchCount || size >= txn.db.opt.maxBatchSize {
+			return ErrTxnTooBig
+		}
+	*/
 	txn.count, txn.size = count, size
 	return nil
 }
@@ -713,7 +715,7 @@ func (db *DB) newTransaction(update, isManaged bool) *Txn {
 	// 4. This txn increments the oracle reference.
 	// 5. Now this txn would go on to commit the keyset, and no conflicts
 	//    would be detected.
-	// See issue: https://github.com/dgraph-io/badger/issues/574
+	// See issue: https://github.com/infinivision/badger/issues/574
 	if !isManaged {
 		txn.readTs = db.orc.readTs()
 	}

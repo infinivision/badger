@@ -30,11 +30,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dgraph-io/badger/options"
-	"github.com/dgraph-io/badger/skl"
-	"github.com/dgraph-io/badger/table"
-	"github.com/dgraph-io/badger/y"
 	humanize "github.com/dustin/go-humanize"
+	"github.com/infinivision/badger/options"
+	"github.com/infinivision/badger/skl"
+	"github.com/infinivision/badger/table"
+	"github.com/infinivision/badger/y"
 	"github.com/pkg/errors"
 	"golang.org/x/net/trace"
 )
@@ -263,6 +263,7 @@ func Open(opt Options) (db *DB, err error) {
 	db.calculateSize()
 	db.closers.updateSize = y.NewCloser(1)
 	go db.updateSize(db.closers.updateSize)
+
 	db.mt = skl.NewSkiplist(arenaSize(opt))
 
 	// newLevelsController potentially loads files in directory.
@@ -636,9 +637,11 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 		size += int64(e.estimateSize(db.opt.ValueThreshold))
 		count++
 	}
-	if count >= db.opt.maxBatchCount || size >= db.opt.maxBatchSize {
-		return nil, ErrTxnTooBig
-	}
+	/*
+		if count >= db.opt.maxBatchCount || size >= db.opt.maxBatchSize {
+			return nil, ErrTxnTooBig
+		}
+	*/
 
 	// We can only service one request because we need each txn to be stored in a contigous section.
 	// Txns should not interleave among other txns or rewrites.
