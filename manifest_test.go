@@ -35,7 +35,7 @@ import (
 )
 
 func TestManifestBasic(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -70,7 +70,7 @@ func TestManifestBasic(t *testing.T) {
 }
 
 func helpTestManifestFileCorruption(t *testing.T, off int64, errorContent string) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -102,6 +102,10 @@ func TestManifestMagic(t *testing.T) {
 
 func TestManifestVersion(t *testing.T) {
 	helpTestManifestFileCorruption(t, 4, "unsupported version")
+}
+
+func TestManifestChecksum(t *testing.T) {
+	helpTestManifestFileCorruption(t, 15, "checksum mismatch")
 }
 
 func key(prefix string, i int) string {
@@ -157,19 +161,16 @@ func buildTable(t *testing.T, keyValues [][]string) *os.File {
 }
 
 func TestOverlappingKeyRangeError(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
-	opt := DefaultOptions
-	opt.Dir = dir
-	opt.ValueDir = dir
-	kv, err := Open(opt)
+	kv, err := Open(DefaultOptions(dir))
 	require.NoError(t, err)
 
 	lh0 := newLevelHandler(kv, 0)
 	lh1 := newLevelHandler(kv, 1)
 	f := buildTestTable(t, "k", 2)
-	t1, err := table.OpenTable(f, options.MemoryMap, nil)
+	t1, err := table.OpenTable(f, options.MemoryMap, options.OnTableAndBlockRead)
 	require.NoError(t, err)
 	defer t1.DecrRef()
 
@@ -190,7 +191,7 @@ func TestOverlappingKeyRangeError(t *testing.T) {
 	lc.runCompactDef(0, cd)
 
 	f = buildTestTable(t, "l", 2)
-	t2, err := table.OpenTable(f, options.MemoryMap, nil)
+	t2, err := table.OpenTable(f, options.MemoryMap, options.OnTableAndBlockRead)
 	require.NoError(t, err)
 	defer t2.DecrRef()
 	done = lh0.tryAddLevel0Table(t2)
@@ -206,7 +207,7 @@ func TestOverlappingKeyRangeError(t *testing.T) {
 }
 
 func TestManifestRewrite(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	deletionsThreshold := 10
@@ -221,13 +222,13 @@ func TestManifestRewrite(t *testing.T) {
 	require.Equal(t, 0, m.Deletions)
 
 	err = mf.addChanges([]*pb.ManifestChange{
-		newCreateChange(0, 0, nil),
+		newCreateChange(0, 0),
 	})
 	require.NoError(t, err)
 
 	for i := uint64(0); i < uint64(deletionsThreshold*3); i++ {
 		ch := []*pb.ManifestChange{
-			newCreateChange(i+1, 0, nil),
+			newCreateChange(i+1, 0),
 			newDeleteChange(i),
 		}
 		err := mf.addChanges(ch)
@@ -239,6 +240,6 @@ func TestManifestRewrite(t *testing.T) {
 	mf, m, err = helpOpenOrCreateManifestFile(dir, false, deletionsThreshold)
 	require.NoError(t, err)
 	require.Equal(t, map[uint64]TableManifest{
-		uint64(deletionsThreshold * 3): {Level: 0, Checksum: []byte{}},
+		uint64(deletionsThreshold * 3): {Level: 0},
 	}, m.Tables)
 }

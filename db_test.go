@@ -18,6 +18,7 @@ package badger
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -34,23 +35,48 @@ import (
 	"testing"
 	"time"
 
-	"github.com/infinivision/badger/options"
-
-	"github.com/infinivision/badger/y"
 	"github.com/stretchr/testify/require"
+
+	"github.com/infinivision/badger/options"
+	"github.com/infinivision/badger/pb"
+	"github.com/infinivision/badger/skl"
+	"github.com/infinivision/badger/y"
 )
 
 var mmap = flag.Bool("vlog_mmap", true, "Specify if value log must be memory-mapped")
 
+// summary is produced when DB is closed. Currently it is used only for testing.
+type summary struct {
+	fileIDs map[uint64]bool
+}
+
+func (s *levelsController) getSummary() *summary {
+	out := &summary{
+		fileIDs: make(map[uint64]bool),
+	}
+	for _, l := range s.levels {
+		l.getSummary(out)
+	}
+	return out
+}
+
+func (s *levelHandler) getSummary(sum *summary) {
+	s.RLock()
+	defer s.RUnlock()
+	for _, t := range s.tables {
+		sum.fileIDs[t.ID()] = true
+	}
+}
+
+func (s *DB) validate() error { return s.lc.validate() }
+
 func getTestOptions(dir string) Options {
-	opt := DefaultOptions
-	opt.MaxTableSize = 1 << 15 // Force more compaction.
-	opt.LevelOneSize = 4 << 15 // Force more compaction.
-	opt.Dir = dir
-	opt.ValueDir = dir
-	opt.SyncWrites = false
+	opt := DefaultOptions(dir).
+		WithMaxTableSize(1 << 15). // Force more compaction.
+		WithLevelOneSize(4 << 15). // Force more compaction.
+		WithSyncWrites(false)
 	if !*mmap {
-		opt.ValueLogLoadingMode = options.FileIO
+		return opt.WithValueLogLoadingMode(options.FileIO)
 	}
 	return opt
 }
@@ -84,7 +110,7 @@ func getItemValue(t *testing.T, item *Item) (val []byte) {
 
 func txnSet(t *testing.T, kv *DB, key []byte, val []byte, meta byte) {
 	txn := kv.NewTransaction(true)
-	require.NoError(t, txn.SetWithMeta(key, val, meta))
+	require.NoError(t, txn.SetEntry(NewEntry(key, val).WithMeta(meta)))
 	require.NoError(t, txn.Commit())
 }
 
@@ -96,7 +122,7 @@ func txnDelete(t *testing.T, kv *DB, key []byte) {
 
 // Opens a badger db and runs a a test on it.
 func runBadgerTest(t *testing.T, opts *Options, test func(t *testing.T, db *DB)) {
-	dir, err := ioutil.TempDir(".", "badger-test")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	if opts == nil {
@@ -124,8 +150,8 @@ func TestUpdateAndView(t *testing.T) {
 	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
 		err := db.Update(func(txn *Txn) error {
 			for i := 0; i < 10; i++ {
-				err := txn.Set([]byte(fmt.Sprintf("key%d", i)), []byte(fmt.Sprintf("val%d", i)))
-				if err != nil {
+				entry := NewEntry([]byte(fmt.Sprintf("key%d", i)), []byte(fmt.Sprintf("val%d", i)))
+				if err := txn.SetEntry(entry); err != nil {
 					return err
 				}
 			}
@@ -278,7 +304,7 @@ func TestTxnTooBig(t *testing.T) {
 		n := 1000
 		txn := db.NewTransaction(true)
 		for i := 0; i < n; {
-			if err := txn.Set(data(i), data(i)); err != nil {
+			if err := txn.SetEntry(NewEntry(data(i), data(i))); err != nil {
 				require.NoError(t, txn.Commit())
 				txn = db.NewTransaction(true)
 			} else {
@@ -301,7 +327,7 @@ func TestTxnTooBig(t *testing.T) {
 }
 
 func TestForceCompactL0(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -322,7 +348,7 @@ func TestForceCompactL0(t *testing.T) {
 		version := uint64(i)
 		txn := db.NewTransactionAt(version, true)
 		for j := 0; j < m; j++ {
-			require.NoError(t, txn.Set(data(j), v))
+			require.NoError(t, txn.SetEntry(NewEntry(data(j), v)))
 		}
 		require.NoError(t, txn.CommitAt(version+1, nil))
 	}
@@ -349,7 +375,7 @@ func TestGetMore(t *testing.T) {
 		for i := 0; i < n; i += m {
 			txn := db.NewTransaction(true)
 			for j := i; j < i+m && j < n; j++ {
-				require.NoError(t, txn.Set(data(j), data(j)))
+				require.NoError(t, txn.SetEntry(NewEntry(data(j), data(j))))
 			}
 			require.NoError(t, txn.Commit())
 		}
@@ -369,9 +395,9 @@ func TestGetMore(t *testing.T) {
 		for i := 0; i < n; i += m {
 			txn := db.NewTransaction(true)
 			for j := i; j < i+m && j < n; j++ {
-				require.NoError(t, txn.Set(data(j),
+				require.NoError(t, txn.SetEntry(NewEntry(data(j),
 					// Use a long value that will certainly exceed value threshold.
-					[]byte(fmt.Sprintf("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz%9d", j))))
+					[]byte(fmt.Sprintf("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz%9d", j)))))
 			}
 			require.NoError(t, txn.Commit())
 		}
@@ -448,8 +474,8 @@ func TestExistsMore(t *testing.T) {
 			}
 			txn := db.NewTransaction(true)
 			for j := i; j < i+m && j < n; j++ {
-				require.NoError(t, txn.Set([]byte(fmt.Sprintf("%09d", j)),
-					[]byte(fmt.Sprintf("%09d", j))))
+				require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("%09d", j)),
+					[]byte(fmt.Sprintf("%09d", j)))))
 			}
 			require.NoError(t, txn.Commit())
 		}
@@ -565,7 +591,7 @@ func TestIterate2Basic(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	n := 10000
@@ -695,14 +721,14 @@ func TestIterateParallel(t *testing.T) {
 		itr.Close() // Double close.
 	}
 
-	opt := DefaultOptions
+	opt := DefaultOptions("")
 	runBadgerTest(t, &opt, func(t *testing.T, db *DB) {
 		var wg sync.WaitGroup
 		var txns []*Txn
 		for i := 0; i < N; i++ {
 			wg.Add(1)
 			txn := db.NewTransaction(true)
-			require.NoError(t, txn.Set(key(i), []byte("1000")))
+			require.NoError(t, txn.SetEntry(NewEntry(key(i), []byte("1000"))))
 			txns = append(txns, txn)
 		}
 		for _, txn := range txns {
@@ -736,13 +762,10 @@ func TestIterateParallel(t *testing.T) {
 }
 
 func TestDeleteWithoutSyncWrite(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
-	opt := DefaultOptions
-	opt.Dir = dir
-	opt.ValueDir = dir
-	kv, err := Open(opt)
+	kv, err := Open(DefaultOptions(dir))
 	if err != nil {
 		t.Error(err)
 		t.Fail()
@@ -755,7 +778,7 @@ func TestDeleteWithoutSyncWrite(t *testing.T) {
 	kv.Close()
 
 	// Reopen KV
-	kv, err = Open(opt)
+	kv, err = Open(DefaultOptions(dir))
 	if err != nil {
 		t.Error(err)
 		t.Fail()
@@ -781,13 +804,13 @@ func TestPidFile(t *testing.T) {
 func TestInvalidKey(t *testing.T) {
 	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
 		err := db.Update(func(txn *Txn) error {
-			err := txn.Set([]byte("!badger!head"), nil)
+			err := txn.SetEntry(NewEntry([]byte("!badger!head"), nil))
 			require.Equal(t, ErrInvalidKey, err)
 
-			err = txn.Set([]byte("!badger!"), nil)
+			err = txn.SetEntry(NewEntry([]byte("!badger!"), nil))
 			require.Equal(t, ErrInvalidKey, err)
 
-			err = txn.Set([]byte("!badger"), []byte("BadgerDB"))
+			err = txn.SetEntry(NewEntry([]byte("!badger"), []byte("BadgerDB")))
 			require.NoError(t, err)
 			return err
 		})
@@ -852,7 +875,7 @@ func TestIteratorPrefetchSize(t *testing.T) {
 }
 
 func TestSetIfAbsentAsync(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	kv, _ := Open(getTestOptions(dir))
@@ -871,7 +894,7 @@ func TestSetIfAbsentAsync(t *testing.T) {
 		txn := kv.NewTransaction(true)
 		_, err = txn.Get(bkey(i))
 		require.Equal(t, ErrKeyNotFound, err)
-		require.NoError(t, txn.SetWithMeta(bkey(i), nil, byte(i%127)))
+		require.NoError(t, txn.SetEntry(NewEntry(bkey(i), nil).WithMeta(byte(i%127))))
 		txn.CommitWith(f)
 	}
 
@@ -947,7 +970,7 @@ func TestDiscardVersionsBelow(t *testing.T) {
 		// Write 4 versions of the same key
 		for i := 0; i < 4; i++ {
 			err := db.Update(func(txn *Txn) error {
-				return txn.Set([]byte("answer"), []byte(fmt.Sprintf("%d", i)))
+				return txn.SetEntry(NewEntry([]byte("answer"), []byte(fmt.Sprintf("%d", i))))
 			})
 			require.NoError(t, err)
 		}
@@ -975,7 +998,7 @@ func TestDiscardVersionsBelow(t *testing.T) {
 
 		// Set new version and discard older ones.
 		err := db.Update(func(txn *Txn) error {
-			return txn.SetWithDiscard([]byte("answer"), []byte("5"), 0)
+			return txn.SetEntry(NewEntry([]byte("answer"), []byte("5")).WithDiscard())
 		})
 		require.NoError(t, err)
 
@@ -1003,12 +1026,12 @@ func TestExpiry(t *testing.T) {
 	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
 		// Write two keys, one with a TTL
 		err := db.Update(func(txn *Txn) error {
-			return txn.Set([]byte("answer1"), []byte("42"))
+			return txn.SetEntry(NewEntry([]byte("answer1"), []byte("42")))
 		})
 		require.NoError(t, err)
 
 		err = db.Update(func(txn *Txn) error {
-			return txn.SetWithTTL([]byte("answer2"), []byte("43"), 1*time.Second)
+			return txn.SetEntry(NewEntry([]byte("answer2"), []byte("43")).WithTTL(1 * time.Second))
 		})
 		require.NoError(t, err)
 
@@ -1044,6 +1067,46 @@ func TestExpiry(t *testing.T) {
 	})
 }
 
+func TestExpiryImproperDBClose(t *testing.T) {
+	dir, err := ioutil.TempDir("", "badger-test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+	opt := getTestOptions(dir)
+	opt.ValueLogLoadingMode = options.FileIO
+
+	db0, err := Open(opt)
+	require.NoError(t, err)
+
+	dur := 1 * time.Hour
+	expiryTime := uint64(time.Now().Add(dur).Unix())
+	err = db0.Update(func(txn *Txn) error {
+		err = txn.SetEntry(NewEntry([]byte("test_key"), []byte("test_value")).WithTTL(dur))
+		require.NoError(t, err)
+		return nil
+	})
+	require.NoError(t, err)
+
+	// Simulate a crash by not closing db0, but releasing the locks.
+	if db0.dirLockGuard != nil {
+		require.NoError(t, db0.dirLockGuard.release())
+	}
+	if db0.valueDirGuard != nil {
+		require.NoError(t, db0.valueDirGuard.release())
+	}
+
+	db1, err := Open(opt)
+	require.NoError(t, err)
+	err = db1.View(func(txn *Txn) error {
+		itm, err := txn.Get([]byte("test_key"))
+		require.NoError(t, err)
+		require.True(t, expiryTime <= itm.ExpiresAt() && itm.ExpiresAt() <= uint64(time.Now().Add(dur).Unix()),
+			"expiry time of entry is invalid")
+		return nil
+	})
+	require.NoError(t, err)
+	require.NoError(t, db1.Close())
+}
+
 func randBytes(n int) []byte {
 	recv := make([]byte, n)
 	in, err := rand.Read(recv)
@@ -1055,28 +1118,23 @@ func randBytes(n int) []byte {
 
 var benchmarkData = []struct {
 	key, value []byte
+	success    bool // represent if KV should be inserted successfully or not
 }{
-	{randBytes(100), nil},
-	{randBytes(1000), []byte("foo")},
-	{[]byte("foo"), randBytes(1000)},
-	{[]byte(""), randBytes(1000)},
-	{nil, randBytes(1000000)},
-	{randBytes(100000), nil},
-	{randBytes(1000000), nil},
+	{randBytes(100), nil, true},
+	{randBytes(1000), []byte("foo"), true},
+	{[]byte("foo"), randBytes(1000), true},
+	{[]byte(""), randBytes(1000), false},
+	{nil, randBytes(1000000), false},
+	{randBytes(100000), nil, false},
+	{randBytes(1000000), nil, false},
 }
 
 func TestLargeKeys(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	opts := new(Options)
-	*opts = DefaultOptions
-	opts.ValueLogFileSize = 1024 * 1024 * 1024
-	opts.Dir = dir
-	opts.ValueDir = dir
-
-	db, err := Open(*opts)
+	db, err := Open(DefaultOptions(dir).WithValueLogFileSize(1024 * 1024 * 1024))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1088,8 +1146,13 @@ func TestLargeKeys(t *testing.T) {
 
 			v := make([]byte, len(kv.value))
 			copy(v, kv.value)
-			if err := tx.Set(k, v); err != nil {
-				// Skip over this record.
+			if err := tx.SetEntry(NewEntry(k, v)); err != nil {
+				// check is success should be true
+				if kv.success {
+					t.Fatalf("failed with: %s", err)
+				}
+			} else if !kv.success {
+				t.Fatal("insertion should fail")
 			}
 		}
 		if err := tx.Commit(); err != nil {
@@ -1103,11 +1166,7 @@ func TestCreateDirs(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	opts := DefaultOptions
-	dir = filepath.Join(dir, "badger")
-	opts.Dir = dir
-	opts.ValueDir = dir
-	db, err := Open(opts)
+	db, err := Open(DefaultOptions(filepath.Join(dir, "badger")))
 	require.NoError(t, err)
 	db.Close()
 	_, err = os.Stat(dir)
@@ -1115,16 +1174,12 @@ func TestCreateDirs(t *testing.T) {
 }
 
 func TestGetSetDeadlock(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	fmt.Println(dir)
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	opt := DefaultOptions
-	opt.Dir = dir
-	opt.ValueDir = dir
-	opt.ValueLogFileSize = 1 << 20
-	db, err := Open(opt)
+	db, err := Open(DefaultOptions(dir).WithValueLogFileSize(1 << 20))
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -1132,7 +1187,7 @@ func TestGetSetDeadlock(t *testing.T) {
 	key := []byte("key1")
 	require.NoError(t, db.Update(func(txn *Txn) error {
 		rand.Read(val)
-		require.NoError(t, txn.Set(key, val))
+		require.NoError(t, txn.SetEntry(NewEntry(key, val)))
 		return nil
 	}))
 
@@ -1146,8 +1201,8 @@ func TestGetSetDeadlock(t *testing.T) {
 			require.NoError(t, err)
 
 			rand.Read(val)
-			require.NoError(t, txn.Set(key, val))
-			require.NoError(t, txn.Set([]byte("key2"), val))
+			require.NoError(t, txn.SetEntry(NewEntry(key, val)))
+			require.NoError(t, txn.SetEntry(NewEntry([]byte("key2"), val)))
 			return nil
 		})
 		done <- true
@@ -1162,16 +1217,12 @@ func TestGetSetDeadlock(t *testing.T) {
 }
 
 func TestWriteDeadlock(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	fmt.Println(dir)
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	opt := DefaultOptions
-	opt.Dir = dir
-	opt.ValueDir = dir
-	opt.ValueLogFileSize = 10 << 20
-	db, err := Open(opt)
+	db, err := Open(DefaultOptions(dir).WithValueLogFileSize(10 << 20))
 	require.NoError(t, err)
 
 	print := func(count *int) {
@@ -1187,7 +1238,7 @@ func TestWriteDeadlock(t *testing.T) {
 		for i := 0; i < 1500; i++ {
 			key := fmt.Sprintf("%d", i)
 			rand.Read(val)
-			require.NoError(t, txn.Set([]byte(key), val))
+			require.NoError(t, txn.SetEntry(NewEntry([]byte(key), val)))
 			print(&count)
 		}
 		return nil
@@ -1211,7 +1262,7 @@ func TestWriteDeadlock(t *testing.T) {
 
 			key := y.Copy(item.Key())
 			rand.Read(val)
-			require.NoError(t, txn.Set(key, val))
+			require.NoError(t, txn.SetEntry(NewEntry(key, val)))
 			print(&count)
 		}
 		return nil
@@ -1316,104 +1367,8 @@ func TestSequence_Release(t *testing.T) {
 	})
 }
 
-func uint64ToBytes(i uint64) []byte {
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], i)
-	return buf[:]
-}
-
-func bytesToUint64(b []byte) uint64 {
-	return binary.BigEndian.Uint64(b)
-}
-
-// Merge function to add two uint64 numbers
-func add(existing, new []byte) []byte {
-	return uint64ToBytes(
-		bytesToUint64(existing) +
-			bytesToUint64(new))
-}
-
-func TestMergeOperatorGetBeforeAdd(t *testing.T) {
-	key := []byte("merge")
-	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
-		m := db.GetMergeOperator(key, add, 200*time.Millisecond)
-		defer m.Stop()
-
-		_, err := m.Get()
-		require.Equal(t, ErrKeyNotFound, err)
-	})
-}
-
-func TestMergeOperatorBeforeAdd(t *testing.T) {
-	key := []byte("merge")
-	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
-		m := db.GetMergeOperator(key, add, 200*time.Millisecond)
-		defer m.Stop()
-		time.Sleep(time.Second)
-	})
-}
-
-func TestMergeOperatorAddAndGet(t *testing.T) {
-	key := []byte("merge")
-	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
-		m := db.GetMergeOperator(key, add, 200*time.Millisecond)
-		defer m.Stop()
-
-		err := m.Add(uint64ToBytes(1))
-		require.NoError(t, err)
-		m.Add(uint64ToBytes(2))
-		require.NoError(t, err)
-		m.Add(uint64ToBytes(3))
-		require.NoError(t, err)
-
-		res, err := m.Get()
-		require.NoError(t, err)
-		require.Equal(t, uint64(6), bytesToUint64(res))
-	})
-}
-
-func TestMergeOperatorCompactBeforeGet(t *testing.T) {
-	key := []byte("merge")
-	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
-		m := db.GetMergeOperator(key, add, 200*time.Millisecond)
-		defer m.Stop()
-
-		err := m.Add(uint64ToBytes(1))
-		require.NoError(t, err)
-		m.Add(uint64ToBytes(2))
-		require.NoError(t, err)
-		m.Add(uint64ToBytes(3))
-		require.NoError(t, err)
-
-		time.Sleep(250 * time.Millisecond) // wait for merge to happen
-
-		res, err := m.Get()
-		require.NoError(t, err)
-		require.Equal(t, uint64(6), bytesToUint64(res))
-	})
-}
-
-func TestMergeOperatorGetAfterStop(t *testing.T) {
-	key := []byte("merge")
-	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
-		m := db.GetMergeOperator(key, add, 1*time.Second)
-
-		err := m.Add(uint64ToBytes(1))
-		require.NoError(t, err)
-		m.Add(uint64ToBytes(2))
-		require.NoError(t, err)
-		m.Add(uint64ToBytes(3))
-		require.NoError(t, err)
-
-		m.Stop()
-		res, err := m.Get()
-		require.NoError(t, err)
-		require.Equal(t, uint64(6), bytesToUint64(res))
-	})
-}
-
 func TestReadOnly(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -1474,7 +1429,7 @@ func TestReadOnly(t *testing.T) {
 
 	// Attempt to set a value on a read-only connection
 	txn := kv1.NewTransaction(true)
-	err = txn.SetWithMeta([]byte("key"), []byte("value"), 0x00)
+	err = txn.SetEntry(NewEntry([]byte("key"), []byte("value")))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "No sets or deletes are allowed in a read-only transaction")
 	err = txn.Commit()
@@ -1482,20 +1437,25 @@ func TestReadOnly(t *testing.T) {
 }
 
 func TestLSMOnly(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	opts := LSMOnlyOptions
-	opts.Dir = dir
-	opts.ValueDir = dir
-
-	dopts := DefaultOptions
+	opts := LSMOnlyOptions(dir)
+	dopts := DefaultOptions(dir)
 	require.NotEqual(t, dopts.ValueThreshold, opts.ValueThreshold)
 
-	dopts.ValueThreshold = 1 << 16
+	dopts.ValueThreshold = 1 << 21
 	_, err = Open(dopts)
-	require.Equal(t, ErrValueThreshold, err)
+	require.Contains(t, err.Error(), "Invalid ValueThreshold")
+
+	// Also test for error, when ValueThresholdSize is greater than maxBatchSize.
+	dopts.ValueThreshold = LSMOnlyOptions(dir).ValueThreshold
+	// maxBatchSize is calculated from MaxTableSize.
+	dopts.MaxTableSize = int64(LSMOnlyOptions(dir).ValueThreshold)
+	_, err = Open(dopts)
+	require.Error(t, err, "db creation should have been failed")
+	require.Contains(t, err.Error(), "Valuethreshold greater than max batch size")
 
 	opts.ValueLogMaxEntries = 100
 	db, err := Open(opts)
@@ -1526,7 +1486,7 @@ func TestMinReadTs(t *testing.T) {
 	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
 		for i := 0; i < 10; i++ {
 			require.NoError(t, db.Update(func(txn *Txn) error {
-				return txn.Set([]byte("x"), []byte("y"))
+				return txn.SetEntry(NewEntry([]byte("x"), []byte("y")))
 			}))
 		}
 		time.Sleep(time.Millisecond)
@@ -1540,7 +1500,7 @@ func TestMinReadTs(t *testing.T) {
 		readTxn := db.NewTransaction(false)
 		for i := 0; i < 10; i++ {
 			require.NoError(t, db.Update(func(txn *Txn) error {
-				return txn.Set([]byte("x"), []byte("y"))
+				return txn.SetEntry(NewEntry([]byte("x"), []byte("y")))
 			}))
 		}
 		require.Equal(t, uint64(20), db.orc.readTs())
@@ -1569,25 +1529,43 @@ func TestGoroutineLeak(t *testing.T) {
 	t.Logf("Num go: %d", before)
 	for i := 0; i < 12; i++ {
 		runBadgerTest(t, nil, func(t *testing.T, db *DB) {
+			updated := false
+			ctx, cancel := context.WithCancel(context.Background())
+			var wg sync.WaitGroup
+			wg.Add(1)
+			var subWg sync.WaitGroup
+			subWg.Add(1)
+			go func() {
+				subWg.Done()
+				err := db.Subscribe(ctx, func(kvs *pb.KVList) {
+					require.Equal(t, []byte("value"), kvs.Kv[0].GetValue())
+					updated = true
+					wg.Done()
+				}, []byte("key"))
+				if err != nil {
+					require.Equal(t, err.Error(), context.Canceled.Error())
+				}
+			}()
+			subWg.Wait()
 			err := db.Update(func(txn *Txn) error {
-				return txn.Set([]byte("key"), []byte("value"))
+				return txn.SetEntry(NewEntry([]byte("key"), []byte("value")))
 			})
 			require.NoError(t, err)
+			wg.Wait()
+			cancel()
+			require.Equal(t, true, updated)
 		})
 	}
 	require.Equal(t, before, runtime.NumGoroutine())
 }
 
 func ExampleOpen() {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	opts := DefaultOptions
-	opts.Dir = dir
-	opts.ValueDir = dir
-	db, err := Open(opts)
+	db, err := Open(DefaultOptions(dir))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1605,7 +1583,7 @@ func ExampleOpen() {
 	}
 
 	txn := db.NewTransaction(true) // Read-write txn
-	err = txn.Set([]byte("key"), []byte("value"))
+	err = txn.SetEntry(NewEntry([]byte("key"), []byte("value")))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1637,17 +1615,13 @@ func ExampleOpen() {
 }
 
 func ExampleTxn_NewIterator() {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
 
-	opts := DefaultOptions
-	opts.Dir = dir
-	opts.ValueDir = dir
-
-	db, err := Open(opts)
+	db, err := Open(DefaultOptions(dir))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1665,7 +1639,7 @@ func ExampleTxn_NewIterator() {
 	// Fill in 1000 items
 	n := 1000
 	for i := 0; i < n; i++ {
-		err := txn.Set(bkey(i), bval(i))
+		err := txn.SetEntry(NewEntry(bkey(i), bval(i)))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1697,6 +1671,162 @@ func ExampleTxn_NewIterator() {
 	// Counted 1000 elements
 }
 
+func TestSyncForRace(t *testing.T) {
+	dir, err := ioutil.TempDir("", "badger-test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	db, err := Open(DefaultOptions(dir).WithSyncWrites(false))
+	require.NoError(t, err)
+	defer db.Close()
+
+	closeChan := make(chan struct{})
+	doneChan := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(100 * time.Microsecond)
+		for {
+			select {
+			case <-ticker.C:
+				if err := db.Sync(); err != nil {
+					require.NoError(t, err)
+				}
+				db.opt.Debugf("Sync Iteration completed")
+			case <-closeChan:
+				close(doneChan)
+				return
+			}
+		}
+	}()
+
+	sz := 128 << 10 // 5 entries per value log file.
+	v := make([]byte, sz)
+	rand.Read(v[:rand.Intn(sz)])
+	txn := db.NewTransaction(true)
+	for i := 0; i < 10000; i++ {
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v)))
+		if i%3 == 0 {
+			require.NoError(t, txn.Commit())
+			txn = db.NewTransaction(true)
+		}
+		if i%100 == 0 {
+			db.opt.Debugf("next 100 entries added to DB")
+		}
+	}
+	require.NoError(t, txn.Commit())
+
+	close(closeChan)
+	<-doneChan
+}
+
+// Earlier, if head is not pointing to latest Vlog file, then at replay badger used to crash with
+// index out of range panic. After fix in this commit it should not.
+func TestNoCrash(t *testing.T) {
+	dir, err := ioutil.TempDir("", "badger-test")
+	require.NoError(t, err, "cannot create badger dir")
+	defer os.RemoveAll(dir)
+
+	ops := getTestOptions(dir)
+	ops.ValueLogMaxEntries = 1
+	db, err := Open(ops)
+	require.NoError(t, err, "unable to open db")
+
+	// entering 100 entries will generate 100 vlog files
+	for i := 0; i < 100; i++ {
+		err := db.Update(func(txn *Txn) error {
+			entry := NewEntry([]byte(fmt.Sprintf("key-%d", i)), []byte(fmt.Sprintf("val-%d", i)))
+			return txn.SetEntry(entry)
+		})
+		require.NoError(t, err, "update to db failed")
+	}
+
+	db.Lock()
+	// make head to point to first file
+	db.vhead = valuePointer{0, 0, 0}
+	db.Unlock()
+	db.Close()
+
+	// reduce size of SSTable to flush early
+	ops.MaxTableSize = 1 << 10
+	db, err = Open(ops)
+	require.Nil(t, err, "error while opening db")
+	require.NoError(t, db.Close())
+}
+
+func TestForceFlushMemtable(t *testing.T) {
+	dir, err := ioutil.TempDir("", "badger-test")
+	require.NoError(t, err, "temp dir for badger count not be created")
+
+	ops := getTestOptions(dir)
+	ops.ValueLogMaxEntries = 1
+	ops.LogRotatesToFlush = 1
+
+	db, err := Open(ops)
+	require.NoError(t, err, "error while openning db")
+	defer db.Close()
+
+	for i := 0; i < 3; i++ {
+		err = db.Update(func(txn *Txn) error {
+			return txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key-%d", i)),
+				[]byte(fmt.Sprintf("value-%d", i))))
+		})
+		require.NoError(t, err, "unable to set key and value")
+	}
+	time.Sleep(1 * time.Second)
+
+	// We want to make sure that memtable is flushed on disk. While flushing memtable to disk,
+	// latest head is also stored in it. Hence we will try to read head from disk. To make sure
+	// this. we will truncate all memtables.
+	db.Lock()
+	db.mt.DecrRef()
+	for _, mt := range db.imm {
+		mt.DecrRef()
+	}
+	db.imm = db.imm[:0]
+	db.mt = skl.NewSkiplist(arenaSize(db.opt)) // Set it up for future writes.
+	db.Unlock()
+
+	// get latest value of value log head
+	headKey := y.KeyWithTs(head, math.MaxUint64)
+	vs, err := db.get(headKey)
+	require.NoError(t, err)
+	var vptr valuePointer
+	vptr.Decode(vs.Value)
+	// Since we are inserting 3 entries and ValueLogMaxEntries is 1, there will be 3 rotation. For
+	// 1st and 2nd time head flushed with memtable will have fid as 0 and last time it will be 1.
+	require.True(t, vptr.Fid == 1, fmt.Sprintf("expected fid: %d, actual fid: %d", 1, vptr.Fid))
+}
+
+func TestVerifyChecksum(t *testing.T) {
+	// use stream write for writing.
+	runBadgerTest(t, nil, func(t *testing.T, db *DB) {
+		value := make([]byte, 32)
+		y.Check2(rand.Read(value))
+		l := &pb.KVList{}
+		st := 0
+		for i := 0; i < 1000; i++ {
+			key := make([]byte, 8)
+			binary.BigEndian.PutUint64(key, uint64(i))
+			l.Kv = append(l.Kv, &pb.KV{
+				Key:      key,
+				Value:    value,
+				StreamId: uint32(st),
+				Version:  1,
+			})
+			if i%100 == 0 {
+				st++
+			}
+		}
+
+		sw := db.NewStreamWriter()
+		require.NoError(t, sw.Prepare(), "sw.Prepare() failed")
+		require.NoError(t, sw.Write(l), "sw.Write() failed")
+		require.NoError(t, sw.Flush(), "sw.Flush() failed")
+
+		require.NoError(t, db.VerifyChecksum(), "checksum verification failed for DB")
+	})
+}
+
 func TestMain(m *testing.M) {
 	// call flag.Parse() here if TestMain uses flags
 	go func() {
@@ -1705,4 +1835,62 @@ func TestMain(m *testing.M) {
 		}
 	}()
 	os.Exit(m.Run())
+}
+
+func ExampleDB_Subscribe() {
+	prefix := []byte{'a'}
+
+	// This key should be printed, since it matches the prefix.
+	aKey := []byte("a-key")
+	aValue := []byte("a-value")
+
+	// This key should not be printed.
+	bKey := []byte("b-key")
+	bValue := []byte("b-value")
+
+	// Open the DB.
+	dir, err := ioutil.TempDir("", "badger-test")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	db, err := Open(DefaultOptions(dir))
+	defer db.Close()
+
+	// Create the context here so we can cancel it after sending the writes.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use the WaitGroup to make sure we wait for the subscription to stop before continuing.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cb := func(kvs *KVList) {
+			for _, kv := range kvs.Kv {
+				fmt.Printf("%s is now set to %s\n", kv.Key, kv.Value)
+			}
+		}
+		if err := db.Subscribe(ctx, cb, prefix); err != nil && err != context.Canceled {
+			log.Fatal(err)
+		}
+		log.Printf("subscription closed")
+	}()
+
+	// Write both keys, but only one should be printed in the Output.
+	err = db.Update(func(txn *Txn) error { return txn.Set(aKey, aValue) })
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = db.Update(func(txn *Txn) error { return txn.Set(bKey, bValue) })
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("stopping subscription")
+	cancel()
+	log.Printf("waiting for subscription to close")
+	wg.Wait()
+	// Output:
+	// a-key is now set to a-value
 }

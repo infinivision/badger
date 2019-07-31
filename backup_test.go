@@ -33,7 +33,7 @@ import (
 )
 
 func TestBackupRestore1(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	db, err := Open(getTestOptions(dir))
@@ -52,7 +52,7 @@ func TestBackupRestore1(t *testing.T) {
 
 	err = db.Update(func(txn *Txn) error {
 		e := entries[0]
-		err := txn.SetWithMeta(e.key, e.val, e.userMeta)
+		err := txn.SetEntry(NewEntry(e.key, e.val).WithMeta(e.userMeta))
 		if err != nil {
 			return err
 		}
@@ -62,7 +62,7 @@ func TestBackupRestore1(t *testing.T) {
 
 	err = db.Update(func(txn *Txn) error {
 		e := entries[1]
-		err := txn.SetWithMeta(e.key, e.val, e.userMeta)
+		err := txn.SetEntry(NewEntry(e.key, e.val).WithMeta(e.userMeta))
 		if err != nil {
 			return err
 		}
@@ -71,7 +71,7 @@ func TestBackupRestore1(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use different directory.
-	dir, err = ioutil.TempDir("", "badger")
+	dir, err = ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	bak, err := ioutil.TempFile(dir, "badgerbak")
@@ -89,7 +89,7 @@ func TestBackupRestore1(t *testing.T) {
 	require.NoError(t, err)
 	defer bak.Close()
 
-	require.NoError(t, db.Load(bak))
+	require.NoError(t, db.Load(bak, 16))
 
 	err = db.View(func(txn *Txn) error {
 		opts := DefaultIteratorOptions
@@ -128,10 +128,7 @@ func TestBackupRestore2(t *testing.T) {
 	s2Path := filepath.Join(tmpdir, "test2")
 	s3Path := filepath.Join(tmpdir, "test3")
 
-	opts := DefaultOptions
-	opts.Dir = s1Path
-	opts.ValueDir = s1Path
-	db1, err := Open(opts)
+	db1, err := Open(DefaultOptions(s1Path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,20 +137,20 @@ func TestBackupRestore2(t *testing.T) {
 	rawValue := []byte("NotLongValue")
 	N := byte(251)
 	err = db1.Update(func(tx *Txn) error {
-		if err := tx.Set(key1, rawValue); err != nil {
+		if err := tx.SetEntry(NewEntry(key1, rawValue)); err != nil {
 			return err
 		}
-		return tx.Set(key2, rawValue)
+		return tx.SetEntry(NewEntry(key2, rawValue))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := byte(1); i < N; i++ {
 		err = db1.Update(func(tx *Txn) error {
-			if err := tx.Set(append(key1, i), rawValue); err != nil {
+			if err := tx.SetEntry(NewEntry(append(key1, i), rawValue)); err != nil {
 				return err
 			}
-			return tx.Set(append(key2, i), rawValue)
+			return tx.SetEntry(NewEntry(append(key2, i), rawValue))
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -166,14 +163,11 @@ func TestBackupRestore2(t *testing.T) {
 	}
 	fmt.Println("backup1 length:", backup.Len())
 
-	opts = DefaultOptions
-	opts.Dir = s2Path
-	opts.ValueDir = s2Path
-	db2, err := Open(opts)
+	db2, err := Open(DefaultOptions(s2Path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = db2.Load(&backup)
+	err = db2.Load(&backup, 16)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,10 +198,10 @@ func TestBackupRestore2(t *testing.T) {
 
 	for i := byte(1); i < N; i++ {
 		err = db2.Update(func(tx *Txn) error {
-			if err := tx.Set(append(key1, i), rawValue); err != nil {
+			if err := tx.SetEntry(NewEntry(append(key1, i), rawValue)); err != nil {
 				return err
 			}
-			return tx.Set(append(key2, i), rawValue)
+			return tx.SetEntry(NewEntry(append(key2, i), rawValue))
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -220,15 +214,12 @@ func TestBackupRestore2(t *testing.T) {
 		t.Fatal(err)
 	}
 	fmt.Println("backup2 length:", backup.Len())
-	opts = DefaultOptions
-	opts.Dir = s3Path
-	opts.ValueDir = s3Path
-	db3, err := Open(opts)
+	db3, err := Open(DefaultOptions(s3Path))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = db3.Load(&backup)
+	err = db3.Load(&backup, 16)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +269,7 @@ func populateEntries(db *DB, entries []*pb.KV) error {
 	return db.Update(func(txn *Txn) error {
 		var err error
 		for i, e := range entries {
-			if err = txn.Set(e.Key, e.Value); err != nil {
+			if err = txn.SetEntry(NewEntry(e.Key, e.Value)); err != nil {
 				return err
 			}
 			entries[i].Version = 1
@@ -296,10 +287,7 @@ func TestBackup(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpdir)
 
-	opts := DefaultOptions
-	opts.Dir = filepath.Join(tmpdir, "backup0")
-	opts.ValueDir = opts.Dir
-	db1, err := Open(opts)
+	db1, err := Open(DefaultOptions(filepath.Join(tmpdir, "backup0")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,15 +332,12 @@ func TestBackupRestore3(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpdir)
 
-	opts := DefaultOptions
 	N := 1000
 	entries := createEntries(N)
 
 	// backup
 	{
-		opts.Dir = filepath.Join(tmpdir, "backup1")
-		opts.ValueDir = opts.Dir
-		db1, err := Open(opts)
+		db1, err := Open(DefaultOptions(filepath.Join(tmpdir, "backup1")))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -367,13 +352,11 @@ func TestBackupRestore3(t *testing.T) {
 	require.True(t, bb.Len() > 0)
 
 	// restore
-	opts.Dir = filepath.Join(tmpdir, "restore1")
-	opts.ValueDir = opts.Dir
-	db2, err := Open(opts)
+	db2, err := Open(DefaultOptions(filepath.Join(tmpdir, "restore1")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	require.NoError(t, db2.Load(&bb))
+	require.NoError(t, db2.Load(&bb, 16))
 
 	// verify
 	err = db2.View(func(txn *Txn) error {
@@ -407,7 +390,6 @@ func TestBackupLoadIncremental(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpdir)
 
-	opts := DefaultOptions
 	N := 100
 	entries := createEntries(N)
 	updates := make(map[int]byte)
@@ -415,9 +397,7 @@ func TestBackupLoadIncremental(t *testing.T) {
 
 	// backup
 	{
-		opts.Dir = filepath.Join(tmpdir, "backup2")
-		opts.ValueDir = opts.Dir
-		db1, err := Open(opts)
+		db1, err := Open(DefaultOptions(filepath.Join(tmpdir, "backup2")))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -445,8 +425,8 @@ func TestBackupLoadIncremental(t *testing.T) {
 		// pick 5 items to mark as expired.
 		err = db1.Update(func(txn *Txn) error {
 			for _, i := range (ints)[10:15] {
-				if err := txn.SetWithTTL(
-					entries[i].Key, entries[i].Value, -time.Hour); err != nil {
+				entry := NewEntry(entries[i].Key, entries[i].Value).WithTTL(-time.Hour)
+				if err := txn.SetEntry(entry); err != nil {
 					return err
 				}
 				updates[i] = bitDelete // expired
@@ -460,7 +440,8 @@ func TestBackupLoadIncremental(t *testing.T) {
 		// pick 5 items to mark as discard.
 		err = db1.Update(func(txn *Txn) error {
 			for _, i := range ints[15:20] {
-				if err := txn.SetWithDiscard(entries[i].Key, entries[i].Value, 0); err != nil {
+				entry := NewEntry(entries[i].Key, entries[i].Value).WithDiscard()
+				if err := txn.SetEntry(entry); err != nil {
 					return err
 				}
 				updates[i] = bitDiscardEarlierVersions
@@ -476,13 +457,11 @@ func TestBackupLoadIncremental(t *testing.T) {
 	require.True(t, bb.Len() > 0)
 
 	// restore
-	opts.Dir = filepath.Join(tmpdir, "restore2")
-	opts.ValueDir = opts.Dir
-	db2, err := Open(opts)
+	db2, err := Open(DefaultOptions(filepath.Join(tmpdir, "restore2")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	require.NoError(t, db2.Load(&bb))
+	require.NoError(t, db2.Load(&bb, 16))
 
 	// verify
 	actual := make(map[int]byte)

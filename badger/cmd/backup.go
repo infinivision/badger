@@ -17,9 +17,11 @@
 package cmd
 
 import (
+	"bufio"
 	"os"
 
-	"github.com/dgraph-io/badger"
+	"github.com/infinivision/badger"
+	"github.com/infinivision/badger/y"
 	"github.com/spf13/cobra"
 )
 
@@ -49,11 +51,9 @@ func init() {
 
 func doBackup(cmd *cobra.Command, args []string) error {
 	// Open DB
-	opts := badger.DefaultOptions
-	opts.Dir = sstDir
-	opts.ValueDir = vlogDir
-	opts.Truncate = truncate
-	db, err := badger.Open(opts)
+	db, err := badger.Open(badger.DefaultOptions(sstDir).
+		WithValueDir(vlogDir).
+		WithTruncate(truncate))
 	if err != nil {
 		return err
 	}
@@ -64,9 +64,19 @@ func doBackup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	// Run Backup
-	_, err = db.Backup(f, 0)
-	return err
+	bw := bufio.NewWriterSize(f, 64<<20)
+	if _, err = db.Backup(bw, 0); err != nil {
+		return err
+	}
+
+	if err = bw.Flush(); err != nil {
+		return err
+	}
+
+	if err = y.FileSync(f); err != nil {
+		return err
+	}
+
+	return f.Close()
 }

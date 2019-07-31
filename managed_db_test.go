@@ -57,7 +57,7 @@ func numKeysManaged(db *DB, readTs uint64) int {
 }
 
 func TestDropAllManaged(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -72,7 +72,7 @@ func TestDropAllManaged(t *testing.T) {
 		for i := start; i < start+N; i++ {
 			wg.Add(1)
 			txn := db.NewTransactionAt(math.MaxUint64, true)
-			require.NoError(t, txn.Set([]byte(key("key", int(i))), val(true)))
+			require.NoError(t, txn.SetEntry(NewEntry([]byte(key("key", int(i))), val(true))))
 			require.NoError(t, txn.CommitAt(uint64(i), func(err error) {
 				require.NoError(t, err)
 				wg.Done()
@@ -102,7 +102,7 @@ func TestDropAllManaged(t *testing.T) {
 }
 
 func TestDropAll(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -114,7 +114,7 @@ func TestDropAll(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -138,7 +138,7 @@ func TestDropAll(t *testing.T) {
 }
 
 func TestDropAllTwice(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -150,7 +150,7 @@ func TestDropAllTwice(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -166,7 +166,7 @@ func TestDropAllTwice(t *testing.T) {
 }
 
 func TestDropAllWithPendingTxn(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -178,7 +178,7 @@ func TestDropAllWithPendingTxn(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -232,7 +232,7 @@ func TestDropAllWithPendingTxn(t *testing.T) {
 }
 
 func TestDropReadOnly(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -243,7 +243,7 @@ func TestDropReadOnly(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -264,7 +264,7 @@ func TestDropReadOnly(t *testing.T) {
 }
 
 func TestWriteAfterClose(t *testing.T) {
-	dir, err := ioutil.TempDir(".", "badger-test")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -275,7 +275,7 @@ func TestWriteAfterClose(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -284,13 +284,13 @@ func TestWriteAfterClose(t *testing.T) {
 	require.Equal(t, int(N), numKeys(db))
 	require.NoError(t, db.Close())
 	err = db.Update(func(txn *Txn) error {
-		return txn.Set([]byte("a"), []byte("b"))
+		return txn.SetEntry(NewEntry([]byte("a"), []byte("b")))
 	})
 	require.Equal(t, ErrBlockedWrites, err)
 }
 
 func TestDropAllRace(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -313,7 +313,7 @@ func TestDropAllRace(t *testing.T) {
 			case <-ticker.C:
 				i++
 				txn := db.NewTransactionAt(math.MaxUint64, true)
-				require.NoError(t, txn.Set([]byte(key("key", i)), val(false)))
+				require.NoError(t, txn.SetEntry(NewEntry([]byte(key("key", i)), val(false))))
 				if err := txn.CommitAt(uint64(i), func(err error) {
 					if err != nil {
 						atomic.AddInt32(&errors, 1)
@@ -333,7 +333,7 @@ func TestDropAllRace(t *testing.T) {
 	for i := 1; i <= N; i++ {
 		wg.Add(1)
 		txn := db.NewTransactionAt(math.MaxUint64, true)
-		require.NoError(t, txn.Set([]byte(key("key", i)), val(false)))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(key("key", i)), val(false))))
 		require.NoError(t, txn.CommitAt(uint64(i), func(err error) {
 			require.NoError(t, err)
 			wg.Done()
@@ -354,7 +354,7 @@ func TestDropAllRace(t *testing.T) {
 }
 
 func TestDropPrefix(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -366,7 +366,7 @@ func TestDropPrefix(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -405,7 +405,7 @@ func TestDropPrefix(t *testing.T) {
 }
 
 func TestDropPrefixWithPendingTxn(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -417,7 +417,7 @@ func TestDropPrefixWithPendingTxn(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -474,7 +474,7 @@ func TestDropPrefixWithPendingTxn(t *testing.T) {
 }
 
 func TestDropPrefixReadOnly(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -485,7 +485,7 @@ func TestDropPrefixReadOnly(t *testing.T) {
 	populate := func(db *DB) {
 		writer := db.NewWriteBatch()
 		for i := uint64(0); i < N; i++ {
-			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true), 0))
+			require.NoError(t, writer.Set([]byte(key("key", int(i))), val(true)))
 		}
 		require.NoError(t, writer.Flush())
 	}
@@ -506,7 +506,7 @@ func TestDropPrefixReadOnly(t *testing.T) {
 }
 
 func TestDropPrefixRace(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opts := getTestOptions(dir)
@@ -529,7 +529,7 @@ func TestDropPrefixRace(t *testing.T) {
 			case <-ticker.C:
 				i++
 				txn := db.NewTransactionAt(math.MaxUint64, true)
-				require.NoError(t, txn.Set([]byte(key("key", i)), val(false)))
+				require.NoError(t, txn.SetEntry(NewEntry([]byte(key("key", i)), val(false))))
 				if err := txn.CommitAt(uint64(i), func(err error) {
 					if err != nil {
 						atomic.AddInt32(&errors, 1)
@@ -549,7 +549,7 @@ func TestDropPrefixRace(t *testing.T) {
 	for i := 1; i <= N; i++ {
 		wg.Add(1)
 		txn := db.NewTransactionAt(math.MaxUint64, true)
-		require.NoError(t, txn.Set([]byte(key("key", i)), val(false)))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(key("key", i)), val(false))))
 		require.NoError(t, txn.CommitAt(uint64(i), func(err error) {
 			require.NoError(t, err)
 			wg.Done()

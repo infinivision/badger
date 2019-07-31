@@ -42,7 +42,7 @@ func (s *testSuite) write(db *badger.DB) error {
 			vali := atomic.AddUint64(&s.count, 1)
 			val := encoded(vali)
 			val = append(val, suffix...)
-			if err := txn.Set(key, val); err != nil {
+			if err := txn.SetEntry(badger.NewEntry(key, val)); err != nil {
 				return err
 			}
 		}
@@ -54,7 +54,7 @@ func (s *testSuite) write(db *badger.DB) error {
 			}
 			key := encoded(keyi)
 			val := append(key, suffix...)
-			if err := txn.Set(key, val); err != nil {
+			if err := txn.SetEntry(badger.NewEntry(key, val)); err != nil {
 				return err
 			}
 		}
@@ -102,20 +102,18 @@ func main() {
 	dir := "/mnt/drive/badgertest"
 	os.RemoveAll(dir)
 
-	opts := badger.DefaultOptions
-	opts.Dir = dir
-	opts.ValueDir = dir
-	opts.TableLoadingMode = options.MemoryMap
-	opts.ValueLogLoadingMode = options.FileIO
-	opts.SyncWrites = false
-
-	db, err := badger.Open(opts)
+	db, err := badger.Open(badger.DefaultOptions(dir).
+		WithTableLoadingMode(options.MemoryMap).
+		WithValueLogLoadingMode(options.FileIO).
+		WithSyncWrites(false))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	go http.ListenAndServe("localhost:8080", nil)
+	go func() {
+		_ = http.ListenAndServe("localhost:8080", nil)
+	}()
 
 	closer := y.NewCloser(11)
 	go func() {

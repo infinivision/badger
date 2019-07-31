@@ -151,7 +151,7 @@ func newLevelsController(db *DB, mf *Manifest) (*levelsController, error) {
 				return
 			}
 
-			t, err := table.OpenTable(fd, db.opt.TableLoadingMode, tf.Checksum)
+			t, err := table.OpenTable(fd, db.opt.TableLoadingMode, db.opt.ChecksumVerificationMode)
 			if err != nil {
 				if strings.HasPrefix(err.Error(), "CHECKSUM_MISMATCH:") {
 					db.opt.Errorf(err.Error())
@@ -526,7 +526,9 @@ func (s *levelsController) compactBuildTables(
 
 			vs := it.Value()
 			version := y.ParseTs(it.Key())
-			if version <= discardTs {
+			// Do not discard entries inserted by merge operator. These entries will be
+			// discarded once they're merged
+			if version <= discardTs && vs.Meta&bitMergeEntry == 0 {
 				// Keep track of the number of versions encountered for this key. Only consider the
 				// versions which are below the minReadTs, otherwise, we might end up discarding the
 				// only valid version for a running transaction.
@@ -561,28 +563,31 @@ func (s *levelsController) compactBuildTables(
 		// called Add() at least once, and builder is not Empty().
 		s.kv.opt.Debugf("LOG Compact. Added %d keys. Skipped %d keys. Iteration took: %v",
 			numKeys, numSkips, time.Since(timeStart))
-		if !builder.Empty() {
-			numBuilds++
-			fileID := s.reserveFileID()
-			go func(builder *table.Builder) {
-				defer builder.Close()
+		build := func(fileID uint64) (*table.Table, error) {
+			fd, err := y.CreateSyncedFile(table.NewFilename(fileID, s.kv.opt.Dir), true)
+			if err != nil {
+				return nil, errors.Wrapf(err, "While opening new table: %d", fileID)
+			}
 
-				fd, err := y.CreateSyncedFile(table.NewFilename(fileID, s.kv.opt.Dir), true)
-				if err != nil {
-					resultCh <- newTableResult{nil, errors.Wrapf(err, "While opening new table: %d", fileID)}
-					return
-				}
+			if _, err := fd.Write(builder.Finish()); err != nil {
+				return nil, errors.Wrapf(err, "Unable to write to file: %d", fileID)
+			}
 
-				if _, err := fd.Write(builder.Finish()); err != nil {
-					resultCh <- newTableResult{nil, errors.Wrapf(err, "Unable to write to file: %d", fileID)}
-					return
-				}
-
-				tbl, err := table.OpenTable(fd, s.kv.opt.TableLoadingMode, nil)
-				// decrRef is added below.
-				resultCh <- newTableResult{tbl, errors.Wrapf(err, "Unable to open table: %q", fd.Name())}
-			}(builder)
+			tbl, err := table.OpenTable(fd, s.kv.opt.TableLoadingMode,
+				s.kv.opt.ChecksumVerificationMode)
+			// decrRef is added below.
+			return tbl, errors.Wrapf(err, "Unable to open table: %q", fd.Name())
 		}
+		if builder.Empty() {
+			continue
+		}
+		numBuilds++
+		fileID := s.reserveFileID()
+		go func(builder *table.Builder) {
+			defer builder.Close()
+			tbl, err := build(fileID)
+			resultCh <- newTableResult{tbl, err}
+		}(builder)
 	}
 
 	newTables := make([]*table.Table, 0, 20)
@@ -608,7 +613,7 @@ func (s *levelsController) compactBuildTables(
 		// -- we're the only holders of a ref).
 		for j := 0; j < numBuilds; j++ {
 			if newTables[j] != nil {
-				newTables[j].DecrRef()
+				_ = newTables[j].DecrRef()
 			}
 		}
 		errorReturn := errors.Wrapf(firstErr, "While running compaction for: %+v", cd)
@@ -618,7 +623,9 @@ func (s *levelsController) compactBuildTables(
 	sort.Slice(newTables, func(i, j int) bool {
 		return y.CompareKeys(newTables[i].Biggest(), newTables[j].Biggest()) < 0
 	})
-	s.kv.vlog.updateGCStats(discardStats)
+	if err := s.kv.vlog.updateDiscardStats(discardStats); err != nil {
+		return nil, nil, errors.Wrap(err, "failed to update discard stats")
+	}
 	s.kv.opt.Debugf("Discard stats: %v", discardStats)
 	return newTables, func() error { return decrRefs(newTables) }, nil
 }
@@ -627,7 +634,7 @@ func buildChangeSet(cd *compactDef, newTables []*table.Table) pb.ManifestChangeS
 	changes := []*pb.ManifestChange{}
 	for _, table := range newTables {
 		changes = append(changes,
-			newCreateChange(table.ID(), cd.nextLevel.level, table.Checksum))
+			newCreateChange(table.ID(), cd.nextLevel.level))
 	}
 	for _, table := range cd.top {
 		changes = append(changes, newDeleteChange(table.ID()))
@@ -843,7 +850,7 @@ func (s *levelsController) addLevel0Table(t *table.Table) error {
 	// the proper order. (That means this update happens before that of some compaction which
 	// deletes the table.)
 	err := s.kv.manifest.addChanges([]*pb.ManifestChange{
-		newCreateChange(t.ID(), 0, t.Checksum),
+		newCreateChange(t.ID(), 0),
 	})
 	if err != nil {
 		return err
@@ -952,14 +959,18 @@ type TableInfo struct {
 	KeyCount uint64 // Number of keys in the table
 }
 
-func (s *levelsController) getTableInfo() (result []TableInfo) {
+func (s *levelsController) getTableInfo(withKeysCount bool) (result []TableInfo) {
 	for _, l := range s.levels {
+		l.RLock()
 		for _, t := range l.tables {
-			it := t.NewIterator(false)
 			var count uint64
-			for it.Rewind(); it.Valid(); it.Next() {
-				count++
+			if withKeysCount {
+				it := t.NewIterator(false)
+				for it.Rewind(); it.Valid(); it.Next() {
+					count++
+				}
 			}
+
 			info := TableInfo{
 				ID:       t.ID(),
 				Level:    l.level,
@@ -969,6 +980,7 @@ func (s *levelsController) getTableInfo() (result []TableInfo) {
 			}
 			result = append(result, info)
 		}
+		l.RUnlock()
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Level != result[j].Level {
@@ -977,4 +989,32 @@ func (s *levelsController) getTableInfo() (result []TableInfo) {
 		return result[i].ID < result[j].ID
 	})
 	return
+}
+
+// verifyChecksum verifies checksum for all tables on all levels.
+func (s *levelsController) verifyChecksum() error {
+	var tables []*table.Table
+	for _, l := range s.levels {
+		l.RLock()
+		tables = tables[:0]
+		for _, t := range l.tables {
+			tables = append(tables, t)
+			t.IncrRef()
+		}
+		l.RUnlock()
+
+		for _, t := range tables {
+			errChkVerify := t.VerifyChecksum()
+			if err := t.DecrRef(); err != nil {
+				s.kv.opt.Errorf("unable to decrease reference of table: %s while "+
+					"verifying checksum with error: %s", t.Filename(), err)
+			}
+
+			if errChkVerify != nil {
+				return errChkVerify
+			}
+		}
+	}
+
+	return nil
 }

@@ -68,7 +68,6 @@ func (s *Arena) putNode(height int) uint32 {
 	// Pad the allocation with enough bytes to ensure pointer alignment.
 	l := uint32(MaxNodeSize - unusedSize + nodeAlign)
 	n := atomic.AddUint32(&s.n, l)
-
 	y.AssertTruef(int(n) <= len(s.buf),
 		"Arena too small, toWrite:%d newTotal:%d limit:%d",
 		l, n, len(s.buf))
@@ -121,8 +120,8 @@ func (s *Arena) getKey(offset uint32, size uint16) []byte {
 
 // getVal returns byte slice at offset. The given size should be just the value
 // size and should NOT include the meta bytes.
-func (s *Arena) getVal(offset uint32, size uint16) (ret y.ValueStruct) {
-	ret.Decode(s.buf[offset : offset+uint32(size)])
+func (s *Arena) getVal(offset uint32, size uint32) (ret y.ValueStruct) {
+	ret.Decode(s.buf[offset : offset+size])
 	return
 }
 

@@ -21,8 +21,10 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/infinivision/badger/options"
 	"github.com/infinivision/badger/y"
@@ -32,7 +34,7 @@ import (
 )
 
 func TestValueBasic(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	y.Check(err)
 	defer os.RemoveAll(dir)
 
@@ -88,7 +90,7 @@ func TestValueBasic(t *testing.T) {
 }
 
 func TestValueGCManaged(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -114,7 +116,7 @@ func TestValueGCManaged(t *testing.T) {
 
 		wg.Add(1)
 		txn := db.NewTransactionAt(newTs(), true)
-		require.NoError(t, txn.Set([]byte(fmt.Sprintf("key%d", i)), v))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v)))
 		require.NoError(t, txn.CommitAt(newTs(), func(err error) {
 			wg.Done()
 			require.NoError(t, err)
@@ -147,7 +149,7 @@ func TestValueGCManaged(t *testing.T) {
 }
 
 func TestValueGC(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opt := getTestOptions(dir)
@@ -161,7 +163,7 @@ func TestValueGC(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		v := make([]byte, sz)
 		rand.Read(v[:rand.Intn(sz)])
-		require.NoError(t, txn.Set([]byte(fmt.Sprintf("key%d", i)), v))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v)))
 		if i%20 == 0 {
 			require.NoError(t, txn.Commit())
 			txn = kv.NewTransaction(true)
@@ -200,7 +202,7 @@ func TestValueGC(t *testing.T) {
 }
 
 func TestValueGC2(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opt := getTestOptions(dir)
@@ -214,7 +216,7 @@ func TestValueGC2(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		v := make([]byte, sz)
 		rand.Read(v[:rand.Intn(sz)])
-		require.NoError(t, txn.Set([]byte(fmt.Sprintf("key%d", i)), v))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v)))
 		if i%20 == 0 {
 			require.NoError(t, txn.Commit())
 			txn = kv.NewTransaction(true)
@@ -276,7 +278,7 @@ func TestValueGC2(t *testing.T) {
 }
 
 func TestValueGC3(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opt := getTestOptions(dir)
@@ -299,7 +301,7 @@ func TestValueGC3(t *testing.T) {
 		}
 		rand.Read(v[:])
 		// Keys key000, key001, key002, such that sorted order matches insertion order
-		require.NoError(t, txn.Set([]byte(fmt.Sprintf("key%03d", i)), v))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%03d", i)), v)))
 		if i%20 == 0 {
 			require.NoError(t, txn.Commit())
 			txn = kv.NewTransaction(true)
@@ -351,7 +353,7 @@ func TestValueGC3(t *testing.T) {
 }
 
 func TestValueGC4(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opt := getTestOptions(dir)
@@ -367,7 +369,7 @@ func TestValueGC4(t *testing.T) {
 	for i := 0; i < 24; i++ {
 		v := make([]byte, sz)
 		rand.Read(v[:rand.Intn(sz)])
-		require.NoError(t, txn.Set([]byte(fmt.Sprintf("key%d", i)), v))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v)))
 		if i%3 == 0 {
 			require.NoError(t, txn.Commit())
 			txn = kv.NewTransaction(true)
@@ -426,8 +428,62 @@ func TestValueGC4(t *testing.T) {
 	}
 }
 
+func TestPersistLFDiscardStats(t *testing.T) {
+	dir, err := ioutil.TempDir("", "badger-test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+	opt := getTestOptions(dir)
+	opt.ValueLogFileSize = 1 << 20
+	opt.Truncate = true
+	// avoid compaction on close, so that discard map remains same
+	opt.CompactL0OnClose = false
+
+	db, err := Open(opt)
+	require.NoError(t, err)
+
+	sz := 128 << 10 // 5 entries per value log file.
+	v := make([]byte, sz)
+	rand.Read(v[:rand.Intn(sz)])
+	txn := db.NewTransaction(true)
+	for i := 0; i < 500; i++ {
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v)))
+		if i%3 == 0 {
+			require.NoError(t, txn.Commit())
+			txn = db.NewTransaction(true)
+		}
+	}
+	require.NoError(t, txn.Commit(), "error while committing txn")
+
+	for i := 0; i < 500; i++ {
+		// use Entry.WithDiscard() to delete entries, because this causes data to be flushed on
+		// disk, creating SSTs. Simple Delete was having data in Memtables only.
+		err = db.Update(func(txn *Txn) error {
+			return txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v).WithDiscard())
+		})
+		require.NoError(t, err)
+	}
+
+	// wait for compaction to complete
+	time.Sleep(1 * time.Second)
+
+	persistedMap := make(map[uint32]int64)
+	db.vlog.lfDiscardStats.Lock()
+	for k, v := range db.vlog.lfDiscardStats.m {
+		persistedMap[k] = v
+	}
+	db.vlog.lfDiscardStats.Unlock()
+	err = db.Close()
+	require.NoError(t, err)
+
+	db, err = Open(opt)
+	require.NoError(t, err)
+	defer db.Close()
+	require.True(t, reflect.DeepEqual(persistedMap, db.vlog.lfDiscardStats.m),
+		"Discard maps are not equal")
+}
+
 func TestChecksums(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -510,7 +566,7 @@ func TestChecksums(t *testing.T) {
 }
 
 func TestPartialAppendToValueLog(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -576,7 +632,7 @@ func TestPartialAppendToValueLog(t *testing.T) {
 }
 
 func TestReadOnlyOpenWithPartialAppendToValueLog(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -615,7 +671,7 @@ func TestReadOnlyOpenWithPartialAppendToValueLog(t *testing.T) {
 
 func TestValueLogTrigger(t *testing.T) {
 	t.Skip("Difficult to trigger compaction, so skipping. Re-enable after fixing #226")
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -630,7 +686,7 @@ func TestValueLogTrigger(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		v := make([]byte, sz)
 		rand.Read(v[:rand.Intn(sz)])
-		require.NoError(t, txn.Set([]byte(fmt.Sprintf("key%d", i)), v))
+		require.NoError(t, txn.SetEntry(NewEntry([]byte(fmt.Sprintf("key%d", i)), v)))
 		if i%20 == 0 {
 			require.NoError(t, txn.Commit())
 			txn = kv.NewTransaction(true)
@@ -651,7 +707,7 @@ func TestValueLogTrigger(t *testing.T) {
 }
 
 func createVlog(t *testing.T, entries []*Entry) []byte {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
@@ -663,7 +719,7 @@ func createVlog(t *testing.T, entries []*Entry) []byte {
 	entries = entries[1:]
 	txn := kv.NewTransaction(true)
 	for _, entry := range entries {
-		require.NoError(t, txn.SetWithMeta(entry.Key, entry.Value, entry.meta))
+		require.NoError(t, txn.SetEntry(NewEntry(entry.Key, entry.Value).WithMeta(entry.meta)))
 	}
 	require.NoError(t, txn.Commit())
 	require.NoError(t, kv.Close())
@@ -675,13 +731,14 @@ func createVlog(t *testing.T, entries []*Entry) []byte {
 }
 
 func TestPenultimateLogCorruption(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 	opt := getTestOptions(dir)
 	opt.ValueLogLoadingMode = options.FileIO
 	// Each txn generates at least two entries. 3 txns will fit each file.
 	opt.ValueLogMaxEntries = 5
+	opt.LogRotatesToFlush = 1000
 
 	db0, err := Open(opt)
 	require.NoError(t, err)
@@ -756,7 +813,7 @@ func (th *testHelper) value() []byte {
 func (th *testHelper) writeRange(from, to int) {
 	for i := from; i <= to; i++ {
 		err := th.db.Update(func(txn *Txn) error {
-			return txn.Set(th.key(i), th.value())
+			return txn.SetEntry(NewEntry(th.key(i), th.value()))
 		})
 		require.NoError(th.t, err)
 	}
@@ -783,17 +840,13 @@ func (th *testHelper) readRange(from, to int) {
 // older version can end up at a higher level in the LSM tree than a newer
 // version, causing the data to not be returned.
 func TestBug578(t *testing.T) {
-	dir, err := ioutil.TempDir("", "badger")
+	dir, err := ioutil.TempDir("", "badger-test")
 	y.Check(err)
 	defer os.RemoveAll(dir)
 
-	opts := DefaultOptions
-	opts.Dir = dir
-	opts.ValueDir = dir
-	opts.ValueLogMaxEntries = 64
-	opts.MaxTableSize = 1 << 13
-
-	db, err := Open(opts)
+	db, err := Open(DefaultOptions(dir).
+		WithValueLogMaxEntries(64).
+		WithMaxTableSize(1 << 13))
 	require.NoError(t, err)
 
 	h := testHelper{db: db, t: t}
@@ -877,4 +930,47 @@ func BenchmarkReadWrite(b *testing.B) {
 			})
 		}
 	}
+}
+
+// Regression test for https://github.com/infinivision/badger/issues/817
+func TestValueLogTruncate(t *testing.T) {
+	dir, err := ioutil.TempDir("", "badger-test")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	db, err := Open(DefaultOptions(dir).WithTruncate(true))
+	require.NoError(t, err)
+	// Insert 1 entry so that we have valid data in first vlog file
+	require.NoError(t, db.Update(func(txn *Txn) error {
+		return txn.Set([]byte("foo"), nil)
+	}))
+
+	fileCountBeforeCorruption := len(db.vlog.filesMap)
+
+	require.NoError(t, db.Close())
+
+	// Create two vlog files corrupted data. These will be truncated when DB starts next time
+	require.NoError(t, ioutil.WriteFile(vlogFilePath(dir, 1), []byte("foo"), 0664))
+	require.NoError(t, ioutil.WriteFile(vlogFilePath(dir, 2), []byte("foo"), 0664))
+
+	db, err = Open(DefaultOptions(dir).WithTruncate(true))
+	require.NoError(t, err)
+
+	// Ensure vlog file with id=1 is not present
+	require.Nil(t, db.vlog.filesMap[1])
+
+	// Ensure filesize of fid=2 is zero
+	zeroFile, ok := db.vlog.filesMap[2]
+	require.True(t, ok)
+	fileStat, err := zeroFile.fd.Stat()
+	require.NoError(t, err)
+	require.Zero(t, fileStat.Size())
+
+	fileCountAfterCorruption := len(db.vlog.filesMap)
+	// +1 because the file with id=2 will be completely truncated. It won't be deleted.
+	// There would be two files. fid=0 with valid data, fid=2 with zero data (truncated).
+	require.Equal(t, fileCountBeforeCorruption+1, fileCountAfterCorruption)
+	// Max file ID would point to the last vlog file, which is fid=2 in this case
+	require.Equal(t, 2, int(db.vlog.maxFid))
+	require.NoError(t, db.Close())
 }
